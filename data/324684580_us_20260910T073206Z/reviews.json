@@ -1,0 +1,17 @@
+{
+  "app": {
+    "id": "324684580",
+    "name": "Spotify: Music and Podcasts",
+    "country": "us",
+    "developer": "Spotify",
+    "store_url": "https://apps.apple.com/us/app/spotify-music-and-podcasts/id324684580?uo=4"
+  },
+  "requested_count": 100,
+  "collected_count": 0,
+  "available_pool_size": 0,
+  "is_partial": true,
+  "warnings": [
+    "Fewer reviews were available than requested"
+  ],
+  "reviews": []
+}
