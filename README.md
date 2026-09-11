@@ -40,7 +40,6 @@ cp .env.example .env
 GROQ_API_KEY=your_groq_api_key
 GROQ_MODEL=openai/gpt-oss-20b
 ```
-Or you can use my api key: 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
 
 Then start the API normally:
 
