@@ -35,7 +35,7 @@ async def test_linked_collect_analyze_download_flow(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr(main, "DATA_ROOT", tmp_path)
     monkeypatch.setattr(main, "collect_reviews", fake_collect)
-    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setitem(
         sys.modules,
         "transformers",
@@ -56,8 +56,23 @@ async def test_linked_collect_analyze_download_flow(tmp_path, monkeypatch) -> No
         analyzed = await client.post("/reviews/analyze", json={"collection_id": collection_id})
         assert analyzed.status_code == 200
         assert analyzed.json()["rating_metrics"]["average_rating"] == 1.0
+        assert analyzed.json()["status"] == "not_configured"
         assert (tmp_path / collection_id / "analysis.json").is_file()
 
         downloaded = await client.get(f"/reviews/{collection_id}/download?format=json")
         assert downloaded.status_code == 200
         assert downloaded.json()["reviews"][0]["id"] == "review-1"
+
+
+async def test_health_reports_dependencies(monkeypatch) -> None:
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    transport = httpx.ASGITransport(app=main.app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["api"]["status"] == "ok"
+    assert response.json()["groq"]["status"] == "not_configured"
+    assert response.json()["sentiment_model"]["status"] in {"not_loaded", "ready"}

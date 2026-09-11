@@ -1,4 +1,5 @@
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
@@ -7,7 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app.collector import CollectionResult, CollectRequest, collect_reviews
-from app.insights import InsightsError, generate_insights
+from app.insights import InsightsError, InsightsResult, check_groq_health, generate_insights
 from app.storage import collection_directory, save_collection
 
 app = FastAPI(
@@ -16,6 +17,8 @@ app = FastAPI(
     version="0.1.0",
 )
 DATA_ROOT = Path("data").resolve()
+SENTIMENT_MODEL = "cardiffnlp/twitter-xlm-roberta-base-sentiment"
+_sentiment_model_error: str | None = None
 
 
 class AnalyzeRequest(BaseModel):
@@ -28,9 +31,50 @@ class CollectResponse(CollectionResult):
     reviews_csv: str
 
 
+@lru_cache(maxsize=1)
+def sentiment_pipeline():
+    """Load the large sentiment model once and reuse it between requests."""
+    global _sentiment_model_error
+
+    from transformers import pipeline
+
+    try:
+        model = pipeline("sentiment-analysis", model=SENTIMENT_MODEL)
+        _sentiment_model_error = None
+        return model
+    except Exception as exc:
+        _sentiment_model_error = f"{type(exc).__name__}: {exc}"
+        raise
+
+
+def sentiment_model_health() -> dict[str, str | bool | None]:
+    if _sentiment_model_error:
+        return {
+            "status": "unavailable",
+            "model": SENTIMENT_MODEL,
+            "loaded": False,
+            "error": _sentiment_model_error,
+        }
+    loaded = sentiment_pipeline.cache_info().currsize > 0
+    return {
+        "status": "ready" if loaded else "not_loaded",
+        "model": SENTIMENT_MODEL,
+        "loaded": loaded,
+        "error": None,
+    }
+
+
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict:
+    groq = await check_groq_health()
+    sentiment = sentiment_model_health()
+    is_degraded = groq["status"] != "available" or sentiment["status"] == "unavailable"
+    return {
+        "status": "degraded" if is_degraded else "ok",
+        "api": {"status": "ok"},
+        "groq": groq,
+        "sentiment_model": sentiment,
+    }
 
 
 @app.post("/reviews/collect", response_model=CollectResponse)
@@ -65,14 +109,10 @@ def analyze(request: AnalyzeRequest) -> dict:
     try:
         payload = json.loads(input_path.read_text(encoding="utf-8"))
         reviews = [review for review in payload.get("reviews", []) if isinstance(review, dict)]
-        from transformers import pipeline
-
         texts = [str(review.get("cleaned_text", "")) for review in reviews]
         if not texts or any(not text.strip() for text in texts):
             raise ValueError("Every review must contain a non-empty cleaned_text")
-        predictions = pipeline(
-            "sentiment-analysis", model="cardiffnlp/twitter-xlm-roberta-base-sentiment"
-        )(texts, batch_size=16, truncation=True)
+        predictions = sentiment_pipeline()(texts, batch_size=16, truncation=True)
         result = add_sentiment(payload, predictions)
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -80,10 +120,10 @@ def analyze(request: AnalyzeRequest) -> dict:
     try:
         result.update(generate_insights(result).model_dump())
     except InsightsError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        result.update(InsightsResult(status="unavailable", error=str(exc)).model_dump())
     result["collection_id"] = request.collection_id
     result["analysis_file"] = str(output_path.relative_to(DATA_ROOT.parent))
+    output_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 

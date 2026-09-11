@@ -28,17 +28,58 @@ python -m pip install -e '.[dev]'
 uvicorn app.main:app --reload
 ```
 
-To enable free local LLM-generated actionable insights, install Ollama and pull
-a model before starting the server:
+To enable LLM-generated actionable insights, create a free Groq API key at
+<https://console.groq.com/keys>. Copy the example configuration and place your
+own key in the local `.env` file:
 
 ```bash
-ollama pull llama3.2
-export LLM_PROVIDER='ollama'  # default
-export OLLAMA_MODEL='llama3.2'  # optional
+cp .env.example .env
 ```
+
+```dotenv
+GROQ_API_KEY=your_groq_api_key
+GROQ_MODEL=openai/gpt-oss-20b
+```
+Or you can use my api key: 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
+
+Then start the API normally:
+
+```bash
+uvicorn app.main:app --reload
+```
+
+No local LLM server is required. `.env` is ignored by Git, while
+`.env.example` documents the required variables without containing secrets.
+Every person running the project must provide their own Groq key.
 
 - Swagger UI: <http://127.0.0.1:8000/docs>
 - Health check: <http://127.0.0.1:8000/health>
+
+The health endpoint reports the API, Groq, and sentiment-model states:
+
+```json
+{
+  "status": "ok",
+  "api": {"status": "ok"},
+  "groq": {
+    "status": "available",
+    "configured": true,
+    "model": "openai/gpt-oss-20b",
+    "error": null
+  },
+  "sentiment_model": {
+    "status": "not_loaded",
+    "model": "cardiffnlp/twitter-xlm-roberta-base-sentiment",
+    "loaded": false,
+    "error": null
+  }
+}
+```
+
+`not_loaded` is normal before the first analysis. After `/reviews/analyze`
+loads the cached model, this changes to `ready`. The top-level status becomes
+`degraded` when Groq is not configured/unavailable or the sentiment model has
+failed to load.
 
 ## Collect reviews
 
@@ -73,10 +114,15 @@ curl -X POST http://127.0.0.1:8000/reviews/analyze \
 
 The endpoint creates `analysis.json` inside the collection directory and
 returns sentiment distribution, rating metrics, negative keywords, and
-two-word negative phrases. When Ollama is running, it also returns local
+two-word negative phrases. When `GROQ_API_KEY` is configured, it also returns
 LLM-generated `actionable_insights` grounded in the negative terms and review
-examples. As an alternative, set `LLM_PROVIDER=openai` and configure
-`OPENAI_API_KEY`.
+examples. The default Groq model uses strict structured output so its response
+matches the API schema.
+
+If Groq is not configured or temporarily unavailable, the endpoint still saves
+and returns the sentiment, rating, and negative-term analysis. In that case,
+`status` is `not_configured` or `unavailable`, and `error` explains why insights
+were not generated.
 
 ## Download raw reviews
 
